@@ -10,6 +10,10 @@ on:
 jobs:
   analyze-migrations:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
     
     steps:
       - name: Checkout code
@@ -22,61 +26,90 @@ jobs:
       
       - name: Install Schema Sentinel
         run: |
-          pip install git+https://github.com/${{ github.repository }}.git
+          # Install the package from the current repository
+          pip install -e .
       
-      - name: Find migration files
-        id: find_files
+      - name: Find and analyze migration files
+        id: analyze
         run: |
-          # Find all SQL files in the PR
-          MIGRATION_FILES=$(git diff --name-only origin/${{ github.base_ref }}...${{ github.head_ref }} | grep -E '\.sql$' | tr '\n' ' ')
+          # Find SQL files changed in this PR
+          MIGRATION_FILES=$(git diff --name-only origin/${{ github.base_ref }}...${{ github.head_ref }} | grep -E '\.sql$' || true)
+          
           echo "Found migration files: $MIGRATION_FILES"
           
           if [ -z "$MIGRATION_FILES" ]; then
             echo "No SQL migration files found in this PR"
+            echo "no_migrations=true" >> $GITHUB_OUTPUT
             exit 0
           fi
           
-          echo "migration_files=$MIGRATION_FILES" >> $GITHUB_OUTPUT
-      
-      - name: Run Schema Sentinel analysis
-        id: analysis
-        if: steps.find_files.outputs.migration_files != ''
-        run: |
-          # Analyze each migration file
-          for file in ${{ steps.find_files.outputs.migration_files }}; do
-            echo "## Analyzing $file" >> report.md
-            echo '```' >> report.md
-            schema-sentinel analyze "$file" --no-db >> report.md 2>&1 || true
-            echo '```' >> report.md
-            echo "" >> report.md
+          echo "no_migrations=false" >> $GITHUB_OUTPUT
+          
+          # Run analysis on each file and save output
+          REPORT="## 🔍 Schema Sentinel Migration Analysis\n\n"
+          
+          for file in $MIGRATION_FILES; do
+            echo "Analyzing $file..."
+            REPORT+="### 📄 \`$file\`\n"
+            REPORT+="\`\`\`\n"
+            # Run the analysis and capture output
+            OUTPUT=$(schema-sentinel analyze "$file" --no-db 2>&1 || true)
+            REPORT+="$OUTPUT\n"
+            REPORT+="\`\`\`\n\n"
           done
-      
+          
+          # Save report to file
+          echo -e "$REPORT" > report.md
+          echo "report=$(cat report.md)" >> $GITHUB_OUTPUT
+          
       - name: Comment on PR
-        if: steps.analysis.outputs.analysis_output != ''
+        if: steps.analyze.outputs.no_migrations == 'false'
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            const report = fs.readFileSync('report.md', 'utf8');
             
-            const body = `## 🔍 Schema Sentinel Migration Analysis
-            ${report}
+            // Read the report
+            let report = fs.readFileSync('report.md', 'utf8');
             
-            ---
-            **💡 Tip:** For more accurate risk analysis, configure the database connection by adding your DATABASE_URL as a GitHub secret.
-            `;
+            // Add footer with tip
+            const body = report + '\n\n---\n**💡 Tip:** For more accurate risk analysis, configure the database connection by adding your `DATABASE_URL` as a GitHub secret.';
             
-            github.rest.issues.createComment({
+            // Find existing comment from this bot
+            const { data: comments } = await github.rest.issues.listComments({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: body
             });
+            
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('Schema Sentinel Migration Analysis')
+            );
+            
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body,
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body,
+              });
+            }
       
       - name: Check for high-risk operations
-        if: steps.analysis.outputs.analysis_output != ''
+        if: steps.analyze.outputs.no_migrations == 'false'
         run: |
-          # Check if any 🔴 HIGH risk was found in the report
           if grep -q "🔴.*HIGH" report.md; then
             echo "⚠️  High-risk migrations detected!"
             echo "Please review the comments above before merging."
