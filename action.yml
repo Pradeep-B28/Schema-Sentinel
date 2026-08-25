@@ -1,0 +1,51 @@
+name: 'Schema Sentinel'
+description: 'Analyze database migration files for production risks'
+author: 'Your Name'
+
+branding:
+  icon: 'database'
+  color: 'blue'
+
+inputs:
+  connection-string:
+    description: 'Database connection string (optional)'
+    required: false
+  fail-on-high-risk:
+    description: 'Fail the build if high-risk migrations are detected'
+    required: false
+    default: 'true'
+  migration-pattern:
+    description: 'Glob pattern for migration files'
+    required: false
+    default: '*.sql'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install Schema Sentinel
+      run: |
+        pip install git+https://github.com/${{ github.repository }}.git
+      shell: bash
+    
+    - name: Run Schema Sentinel
+      run: |
+        if [ -z "${{ inputs.connection-string }}" ]; then
+          schema-sentinel analyze ${{ inputs.migration-pattern }} --no-db
+        else
+          schema-sentinel analyze ${{ inputs.migration-pattern }} --connection "${{ inputs.connection-string }}"
+        fi
+      shell: bash
+    
+    - name: Check for high-risk
+      if: ${{ inputs.fail-on-high-risk == 'true' }}
+      run: |
+        if grep -q "🔴.*HIGH" migration_report.txt; then
+          echo "⚠️  High-risk migrations detected!"
+          exit 1
+        fi
+      shell: bash

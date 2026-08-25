@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "schema-sentinel"
+version = "0.1.0"
+description = "Pre-migration risk analysis for database schema changes"
+readme = "README.md"
+authors = [
+    {name = "Your Name", email = "your@email.com"}
+]
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = [
+    "click>=8.0.0",
+    "sqlparse>=0.4.0",
+    "psycopg2-binary>=2.9.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+schema-sentinel = "schema_sentinel.cli:main"
+
+[tool.setuptools]
+packages = ["schema_sentinel"]
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100

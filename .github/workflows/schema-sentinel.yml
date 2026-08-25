@@ -1,0 +1,86 @@
+name: Schema Sentinel
+
+on:
+  pull_request:
+    paths:
+      - '*.sql'
+      - 'migrations/*.sql'
+      - 'db/migrations/*.sql'
+
+jobs:
+  analyze-migrations:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install Schema Sentinel
+        run: |
+          pip install git+https://github.com/${{ github.repository }}.git
+      
+      - name: Find migration files
+        id: find_files
+        run: |
+          # Find all SQL files in the PR
+          MIGRATION_FILES=$(git diff --name-only origin/${{ github.base_ref }}...${{ github.head_ref }} | grep -E '\.sql$' | tr '\n' ' ')
+          echo "Found migration files: $MIGRATION_FILES"
+          
+          if [ -z "$MIGRATION_FILES" ]; then
+            echo "No SQL migration files found in this PR"
+            exit 0
+          fi
+          
+          echo "migration_files=$MIGRATION_FILES" >> $GITHUB_OUTPUT
+      
+      - name: Run Schema Sentinel analysis
+        id: analysis
+        if: steps.find_files.outputs.migration_files != ''
+        run: |
+          # Analyze each migration file
+          for file in ${{ steps.find_files.outputs.migration_files }}; do
+            echo "## Analyzing $file" >> report.md
+            echo '```' >> report.md
+            schema-sentinel analyze "$file" --no-db >> report.md 2>&1 || true
+            echo '```' >> report.md
+            echo "" >> report.md
+          done
+      
+      - name: Comment on PR
+        if: steps.analysis.outputs.analysis_output != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('report.md', 'utf8');
+            
+            const body = `## 🔍 Schema Sentinel Migration Analysis
+            ${report}
+            
+            ---
+            **💡 Tip:** For more accurate risk analysis, configure the database connection by adding your DATABASE_URL as a GitHub secret.
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+      
+      - name: Check for high-risk operations
+        if: steps.analysis.outputs.analysis_output != ''
+        run: |
+          # Check if any 🔴 HIGH risk was found in the report
+          if grep -q "🔴.*HIGH" report.md; then
+            echo "⚠️  High-risk migrations detected!"
+            echo "Please review the comments above before merging."
+            exit 1
+          else
+            echo "✅ All migrations are safe to merge."
+          fi
